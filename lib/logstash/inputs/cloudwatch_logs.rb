@@ -35,6 +35,11 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # Value is in seconds.
   config :interval, :validate => :number, :default => 60
 
+  # Specify the maximum CloudWatch history in days to read back.
+  # Doesnot override sincedb, so once you've started capturing logs, if
+  # you start again, it will still ensure there are no gaps.
+  config :max_history, :validate => :number, :default => nil
+
   # def register
   public
   def register
@@ -73,10 +78,11 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
     streams = @cloudwatch.describe_log_streams(params)
     streams.log_streams.each do |stream|
       if stream.first_event_timestamp > last_read
-        objects.unshift(stream)
         @logger.debug("Processing Log Stream #{stream.log_stream_name} which started at #{parse_time(stream.first_event_timestamp)}")
+        objects.unshift(stream)
       else
         @logger.debug("Ignoring Log Stream #{stream.log_stream_name} which started at #{parse_time(stream.first_event_timestamp)}")
+        break
       end
     end
 
@@ -121,7 +127,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
     objects = list_new_streams(last_read)
 
     if last_read < 0
-      last_read = 1
+      last_read = epoch
     end
 
     objects.each do |stream|
@@ -172,11 +178,11 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   def sincedb
     @sincedb ||= if @sincedb_path.nil?
                    @logger.info("Using default generated file for the sincedb", :filename => sincedb_file)
-                   SinceDB::File.new(sincedb_file)
+                   SinceDB::File.new(sincedb_file, epoch)
                  else
                    @logger.info("Using the provided sincedb_path",
                                 :sincedb_path => @sincedb_path)
-                   SinceDB::File.new(@sincedb_path)
+                   SinceDB::File.new(@sincedb_path, epoch)
                  end
   end
 
@@ -185,10 +191,20 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
     File.join(ENV["HOME"], ".sincedb_" + Digest::MD5.hexdigest("#{@log_group}"))
   end
 
+  # Time to start from
+  def epoch
+    if @max_history
+      DateTime.now.strftime('%Q').to_i - @max_history.to_i * 86400000 # Milliseconds per day
+    else
+      1 # UNIX Epoch
+    end
+  end
+
   module SinceDB
     class File
-      def initialize(file)
+      def initialize(file, epoch)
         @sincedb_path = file
+        @epoch = epoch
       end
 
       def newer?(date)
@@ -199,7 +215,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
         if ::File.exists?(@sincedb_path)
           since = ::File.read(@sincedb_path).chomp.strip.to_i
         else
-          since = 1
+          since = @epoch
         end
         return since
       end
