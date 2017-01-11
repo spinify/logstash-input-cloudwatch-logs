@@ -59,11 +59,11 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
   # def list_new_streams
   public
-  def list_new_streams(token = nil, objects = [])
+  def list_new_streams(last_read, token = nil,  objects = [])
     params = {
         :log_group_name => @log_group,
         :order_by => "LastEventTime",
-        :descending => false
+        :descending => true
     }
 
     if token != nil
@@ -71,14 +71,21 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
     end
 
     streams = @cloudwatch.describe_log_streams(params)
+    streams.log_streams.each do |stream|
+      if stream.first_event_timestamp > last_read
+        objects.unshift(stream)
+        @logger.debug("Processing Log Stream #{stream.log_stream_name} which started at #{parse_time(stream.first_event_timestamp)}")
+      else
+        @logger.debug("Ignoring Log Stream #{stream.log_stream_name} which started at #{parse_time(stream.first_event_timestamp)}")
+      end
+    end
 
-    objects.push(*streams.log_streams)
     if streams.next_token == nil
       @logger.debug("CloudWatch Logs hit end of tokens for streams")
       objects
     else
       @logger.debug("CloudWatch Logs calling list_new_streams again on token", :token => streams.next_token)
-      list_new_streams(streams.next_token, objects)
+      list_new_streams(last_read, streams.next_token, objects)
     end
 
   end # def list_new_streams
@@ -108,10 +115,10 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # def process_group
   public
   def process_group(queue)
-    objects = list_new_streams
-
     last_read = sincedb.read
     current_window = DateTime.now.strftime('%Q')
+
+    objects = list_new_streams(last_read)
 
     if last_read < 0
       last_read = 1
