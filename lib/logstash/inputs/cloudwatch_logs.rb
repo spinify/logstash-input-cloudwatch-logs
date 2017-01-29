@@ -148,7 +148,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # def process_group
   public
   def process_group(queue, group)
-    last_read = sincedb.read
+    last_read = sincedb(group).read
     current_window = DateTime.now.strftime('%Q')
 
     objects = list_new_streams(group, last_read)
@@ -163,7 +163,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
       end
     end
 
-    sincedb.write(current_window)
+    sincedb(group).write(current_window)
   end # def process_group
 
   # def process_log_stream
