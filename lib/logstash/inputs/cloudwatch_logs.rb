@@ -29,7 +29,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # the last handled file was added to S3). The default will write
   # sincedb files to some path matching "$HOME/.sincedb*"
   # Should be a path with filename not just a directory.
-  config :sincedb_path, :validate => :string, :default => nil
+  config :sincedb_path, :validate => :string, :default => nil, :obsolete => "Since DB path is always automatically computed"
 
   # Interval to wait between to check the file list again after a run is finished.
   # Value is in seconds.
@@ -57,16 +57,43 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   public
   def run(queue)
     while !stop?
-      process_group(queue)
+      if( @log_group.end_with?('*') )
+        list_groups(@log_group.chomp).each do |group|
+          process_group(queue, group)
+        end
+      else
+        process_group(queue, @log_group)
+      end
       Stud.stoppable_sleep(@interval)
     end
   end # def run
 
+
+  # def list_groups
+  public
+  def list_groups(prefix = "", token = nil, groups = [])
+    params = {
+      log_group_name_prefix: prefix
+    }
+    if token != nil
+      params[:next_token] = token
+    end
+
+    groups_descriptor = @cloudwatch.describe_log_groups(params)
+    groups.concat(groups_descriptor.log_groups.map { |g| g.log_group_name })
+
+    if groups_descriptor.next_token == nil
+      groups
+    else
+      list_groups(prefix, groups_descriptor.next_token, groups)
+    end
+  end # def list_groups
+
   # def list_new_streams
   public
-  def list_new_streams(last_read, token = nil,  objects = [])
+  def list_new_streams(group, last_read, token = nil,  objects = [])
     params = {
-        :log_group_name => @log_group,
+        :log_group_name => group,
         :order_by => "LastEventTime",
         :descending => true
     }
@@ -91,19 +118,19 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
       objects
     else
       @logger.debug("CloudWatch Logs calling list_new_streams again on token", :token => streams.next_token)
-      list_new_streams(last_read, streams.next_token, objects)
+      list_new_streams(group, last_read, streams.next_token, objects)
     end
 
   end # def list_new_streams
 
   # def process_log
   private
-  def process_log(queue, log, stream)
+  def process_log(queue, group, log, stream)
 
     @codec.decode(log.message.to_str) do |event|
       event.set("@timestamp", parse_time(log.timestamp))
       event.set("[cloudwatch][ingestion_time]", parse_time(log.ingestion_time))
-      event.set("[cloudwatch][log_group]", @log_group)
+      event.set("[cloudwatch][log_group]", group)
       event.set("[cloudwatch][log_stream]", stream.log_stream_name)
       decorate(event)
 
@@ -120,11 +147,11 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
   # def process_group
   public
-  def process_group(queue)
+  def process_group(queue, group)
     last_read = sincedb.read
     current_window = DateTime.now.strftime('%Q')
 
-    objects = list_new_streams(last_read)
+    objects = list_new_streams(group, last_read)
 
     if last_read < 0
       last_read = epoch
@@ -132,7 +159,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
     objects.each do |stream|
       if stream.last_ingestion_time && stream.last_ingestion_time > last_read
-        process_log_stream(queue, stream, last_read, current_window)
+        process_log_stream(queue, group, stream, last_read, current_window)
       end
     end
 
@@ -141,17 +168,17 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
   # def process_log_stream
   private
-  def process_log_stream(queue, stream, last_read, current_window, token = nil)
+  def process_log_stream(queue, group, stream, last_read, current_window, token = nil)
     @logger.debug("CloudWatch Logs processing stream",
                   :log_stream => stream.log_stream_name,
-                  :log_group => @log_group,
+                  :log_group => group,
                   :lastRead => last_read,
                   :currentWindow => current_window,
                   :token => token
     )
 
     params = {
-        :log_group_name => @log_group,
+        :log_group_name => group,
         :log_stream_name => stream.log_stream_name,
         :start_from_head => true
     }
@@ -164,31 +191,25 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
 
     logs.events.each do |log|
       if log.ingestion_time > last_read
-        process_log(queue, log, stream)
+        process_log(queue, group, log, stream)
       end
     end
 
     # if there are more pages, continue
     if logs.events.count != 0 && logs.next_forward_token != nil
-      process_log_stream(queue, stream, last_read, current_window, logs.next_forward_token)
+      process_log_stream(queue, group, stream, last_read, current_window, logs.next_forward_token)
     end
   end # def process_log_stream
 
   private
-  def sincedb
-    @sincedb ||= if @sincedb_path.nil?
-                   @logger.info("Using default generated file for the sincedb", :filename => sincedb_file)
-                   SinceDB::File.new(sincedb_file, epoch)
-                 else
-                   @logger.info("Using the provided sincedb_path",
-                                :sincedb_path => @sincedb_path)
-                   SinceDB::File.new(@sincedb_path, epoch)
-                 end
+  def sincedb(group)
+    @sincedb ||= {}
+    @sincedb[group] ||= SinceDB::File.new(sincedb_file(group), epoch)
   end
 
   private
-  def sincedb_file
-    File.join(ENV["HOME"], ".sincedb_" + Digest::MD5.hexdigest("#{@log_group}"))
+  def sincedb_file(group)
+    File.join(ENV["HOME"], ".sincedb_" + Digest::MD5.hexdigest("#{group}"))
   end
 
   # Time to start from
