@@ -27,6 +27,7 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # Log group to pull logs from for this plugin. Will pull in all
   # streams inside of this log group.
   config :log_group, :validate => :string, :required => true
+  config :log_group_is_prefix, :validate => :boolean, :required => false
 
   # Where to write the since database (keeps track of the date
   # the last handled file was added to S3). The default will write
@@ -59,8 +60,8 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   public
   def run(queue)
     while !stop?
-      if( @log_group.end_with?('*') )
-        list_groups(@log_group.chomp).each do |group|
+      if( @log_group_is_prefix )
+        list_groups(@log_group).each do |group|
           process_group(queue, group)
         end
       else
