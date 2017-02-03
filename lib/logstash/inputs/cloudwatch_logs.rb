@@ -129,8 +129,20 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
   # def process_log
   private
   def process_log(queue, group, log, stream)
-
+    
+    current_request_id = nil
     @codec.decode(log.message.to_str) do |event|
+
+      if event =~ /^START RequestId: ([a-z0-9-]+)/
+        current_request_id = $1
+      elsif event =~ /^END RequestId: ([a-z0-9-]+)/
+        current_request_id = nil
+      end
+
+      if current_request_id
+        event.set("[lambda][request_id]", current_request_id)
+      end
+
       event.set("@timestamp", parse_time(log.timestamp))
       event.set("[cloudwatch][ingestion_time]", parse_time(log.ingestion_time))
       event.set("[cloudwatch][log_group]", group)
