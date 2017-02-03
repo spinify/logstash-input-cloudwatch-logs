@@ -8,6 +8,8 @@ require "tmpdir"
 require "stud/interval"
 require "stud/temporary"
 
+module Aws; const_set(:CloudWatchLogs, Aws::CloudWatchLogs); end
+
 # Stream events from ClougWatch Logs streams.
 #
 # Primarily designed to pull logs from Lambda's which are logging to
@@ -46,8 +48,6 @@ class LogStash::Inputs::CloudWatch_Logs < LogStash::Inputs::Base
     require "digest/md5"
     require "aws-sdk"
  
-    module Aws; const_set(:CloudWatchLogs, Aws::CloudWatchLogs); end
-
     @logger.info("Registering cloudwatch_logs input", :log_group => @log_group)
 
     Aws::ConfigService::Client.new(aws_options_hash)
